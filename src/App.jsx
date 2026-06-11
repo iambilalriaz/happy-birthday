@@ -56,16 +56,18 @@ const WISH_TEMPLATES = [
   (n, a) =>
     `Happy ${a ? a + ordinal(a) + " " : ""}Birthday, ${n}! May this year bring you joy you didn't see coming and luck you absolutely deserve.`,
   (n, a) =>
-    `${n}, ${a ? a + " years" : "every year"} of being wonderful — and the best chapter starts today. Make a big wish.`,
+    `${n}, ${a ? `${a} ${pluralize(a, "year")}` : "every year"} of being wonderful — and the best chapter starts today. Make a big wish.`,
   (n) =>
     `Cheers to you, ${n}! May your candles always be easy to blow out and your cake impossible to finish in one sitting.`,
   (n, a) =>
-    `Happy Birthday, ${n}! ${a ? `${a} trips around the sun` : "Another trip around the sun"} and you keep getting brighter.`,
+    `Happy Birthday, ${n}! ${a ? `${a} ${pluralize(a, "trip")} around the sun` : "Another trip around the sun"} and you keep getting brighter.`,
   (n) =>
     `${n}, may the year ahead be generous: more laughter, more naps, more cake, fewer Mondays.`,
   (n) =>
     `To ${n} — the kind of person birthdays were invented for. Have the best one yet.`,
 ];
+
+const pluralize = (count, word) => (count === 1 ? word : `${word}s`);
 
 function ordinal(n) {
   const s = ["th", "st", "nd", "rd"];
@@ -495,7 +497,7 @@ export default function App() {
         <main className="screen center">
           <div className="reveal">
             <h1 className="display giant pop-in">Happy Birthday<br /><span className="grad-text">{name.trim()}!</span> 🎂</h1>
-            {age && <p className="reveal-sub pop-in-late">Celebrating {age} amazing years</p>}
+            {age && <p className="reveal-sub pop-in-late">Celebrating {age} amazing {pluralize(age, "year")}</p>}
           </div>
         </main>
       )}
@@ -567,7 +569,7 @@ export default function App() {
           {/* stats */}
           {age && (
             <section className="stats">
-              <Stat label="years young" value={age} />
+              <Stat label={`${pluralize(age, "year")} young`} value={age} />
               <Stat label="months of memories" value={age * 12} />
               <Stat label="days lived" value={days} />
               <Stat label="hours (roughly!)" value={days * 24} />
@@ -1008,7 +1010,11 @@ const CSS = `
 }
 .candle-vignette.dark { background: rgba(0,0,0,0.7); opacity: 1; }
 
-.cake-wrap { position: relative; z-index: 11; width: clamp(300px, 70vw, 460px); }
+.cake-wrap {
+  position: relative; z-index: 11;
+  width: clamp(300px, 70vw, 460px); max-width: 100%;
+  container-type: inline-size;
+}
 .cake-svg {
   display: block; width: 100%; height: auto;
   filter: drop-shadow(0 24px 30px rgba(0,0,0,0.4));
@@ -1025,17 +1031,21 @@ const CSS = `
 }
 .candle { position: relative; display: flex; flex-direction: column; align-items: center; }
 .candle-body {
+  /* fallback sizes, overridden by cqw below where container queries are supported */
   width: clamp(7px, 1.6vw, 11px); height: clamp(30px, 6vw, 44px);
+  width: 2.4cqw; height: 9.5cqw;
   border-radius: 4px 4px 2px 2px;
   background: repeating-linear-gradient(135deg, hsl(var(--hue) 75% 78%) 0 5px, hsl(var(--hue) 75% 62%) 5px 10px);
   box-shadow: inset -2px 0 3px rgba(0,0,0,0.18);
 }
-.wick { width: 2px; height: 6px; background: #3b2c1f; }
+.wick { width: 2px; height: 6px; height: 1.3cqw; background: #3b2c1f; }
 .flame {
   width: 12px; height: 20px;
+  width: 2.7cqw; height: 4.4cqw;
   background: radial-gradient(ellipse at 50% 70%, #fff8e0 0%, #ffd76b 38%, #ff9d3c 70%, rgba(255,90,30,0) 100%);
   border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
   filter: drop-shadow(0 0 8px rgba(255,180,80,0.9)) drop-shadow(0 0 22px rgba(255,140,40,0.55));
+  filter: drop-shadow(0 0 1.7cqw rgba(255,180,80,0.9)) drop-shadow(0 0 4.8cqw rgba(255,140,40,0.55));
   animation: flicker 240ms ease-in-out infinite alternate;
   transform-origin: 50% 100%;
 }
@@ -1090,7 +1100,7 @@ const CSS = `
 
 .audio-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .vol { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 800; color: var(--sub); flex: 1; min-width: 140px; }
-.vol input { flex: 1; accent-color: var(--accent); }
+.vol input { flex: 1; min-width: 0; accent-color: var(--accent); }
 
 .wish-text {
   font-family: 'Fraunces', serif; font-size: clamp(1.05rem, 3vw, 1.35rem);
@@ -1192,5 +1202,6 @@ const CSS = `
   .field-row { flex-direction: column; align-items: stretch; }
   .or { padding-top: 0; text-align: center; }
   .party { padding-top: 80px; }
+  .vol { flex-basis: 100%; order: 1; }
 }
 `;

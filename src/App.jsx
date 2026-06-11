@@ -1,0 +1,1196 @@
+import React, { useState, useEffect, useRef, useCallback } from "react";
+
+/* ============================================================
+   Birthday Celebration — single-file React experience
+   Stages: form → reveal → cake (blow detection) → party
+   ============================================================ */
+
+const THEMES = {
+  midnight: {
+    label: "Midnight Gold",
+    bg: "radial-gradient(1200px 800px at 50% -10%, #2a1d4d 0%, #14102b 45%, #0a0818 100%)",
+    ink: "#f7efdd",
+    sub: "#bfb3d9",
+    accent: "#f5c66b",
+    accent2: "#ff8fab",
+    card: "rgba(255,255,255,0.06)",
+    border: "rgba(245,198,107,0.25)",
+    fireworks: ["#f5c66b", "#ff8fab", "#9b8cff", "#7be0c3", "#ffd9a0"],
+  },
+  neon: {
+    label: "Neon Party",
+    bg: "radial-gradient(1000px 700px at 50% 0%, #16041f 0%, #0a0312 55%, #050208 100%)",
+    ink: "#eafdff",
+    sub: "#9fb8c9",
+    accent: "#19e3ff",
+    accent2: "#ff2ea6",
+    card: "rgba(25,227,255,0.05)",
+    border: "rgba(255,46,166,0.35)",
+    fireworks: ["#19e3ff", "#ff2ea6", "#a6ff4d", "#ffe600", "#b14dff"],
+  },
+  pastel: {
+    label: "Pastel Dreams",
+    bg: "linear-gradient(180deg, #fdeef4 0%, #ece8ff 55%, #def3f0 100%)",
+    ink: "#4a3b5c",
+    sub: "#8a7aa0",
+    accent: "#e08bb0",
+    accent2: "#8fa9e8",
+    card: "rgba(255,255,255,0.65)",
+    border: "rgba(224,139,176,0.4)",
+    fireworks: ["#e08bb0", "#8fa9e8", "#9fd8c5", "#f2c98a", "#c9a6e8"],
+  },
+  galaxy: {
+    label: "Galaxy",
+    bg: "radial-gradient(900px 700px at 70% 10%, #1d2c63 0%, #121540 45%, #060616 100%)",
+    ink: "#e8ecff",
+    sub: "#9aa5d6",
+    accent: "#8fd0ff",
+    accent2: "#c08fff",
+    card: "rgba(143,208,255,0.06)",
+    border: "rgba(192,143,255,0.3)",
+    fireworks: ["#8fd0ff", "#c08fff", "#ffffff", "#6ef0d2", "#ffb3f0"],
+  },
+};
+
+const WISH_TEMPLATES = [
+  (n, a) =>
+    `Happy ${a ? a + ordinal(a) + " " : ""}Birthday, ${n}! May this year bring you joy you didn't see coming and luck you absolutely deserve.`,
+  (n, a) =>
+    `${n}, ${a ? a + " years" : "every year"} of being wonderful — and the best chapter starts today. Make a big wish.`,
+  (n) =>
+    `Cheers to you, ${n}! May your candles always be easy to blow out and your cake impossible to finish in one sitting.`,
+  (n, a) =>
+    `Happy Birthday, ${n}! ${a ? `${a} trips around the sun` : "Another trip around the sun"} and you keep getting brighter.`,
+  (n) =>
+    `${n}, may the year ahead be generous: more laughter, more naps, more cake, fewer Mondays.`,
+  (n) =>
+    `To ${n} — the kind of person birthdays were invented for. Have the best one yet.`,
+];
+
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
+}
+
+/* ---------------- Happy Birthday melody (Web Audio) ---------------- */
+const NOTE = { G4: 392, A4: 440, B4: 493.88, C5: 523.25, D5: 587.33, E5: 659.25, F5: 698.46, G5: 783.99 };
+const MELODY = [
+  ["G4", 0.5], ["G4", 0.5], ["A4", 1], ["G4", 1], ["C5", 1], ["B4", 2],
+  ["G4", 0.5], ["G4", 0.5], ["A4", 1], ["G4", 1], ["D5", 1], ["C5", 2],
+  ["G4", 0.5], ["G4", 0.5], ["G5", 1], ["E5", 1], ["C5", 1], ["B4", 1], ["A4", 2],
+  ["F5", 0.5], ["F5", 0.5], ["E5", 1], ["C5", 1], ["D5", 1], ["C5", 2.5],
+];
+const BEAT = 0.34;
+
+/* ============================================================ */
+
+export default function App() {
+  const [stage, setStage] = useState("form"); // form | reveal | cake | party
+  const [themeKey, setThemeKey] = useState("midnight");
+  const theme = THEMES[themeKey];
+
+  const [name, setName] = useState("");
+  const [ageInput, setAgeInput] = useState("");
+  const [yearInput, setYearInput] = useState("");
+  const [formError, setFormError] = useState("");
+  const [age, setAge] = useState(null);
+
+  const [candlesLit, setCandlesLit] = useState(true);
+  const [blowing, setBlowing] = useState(false); // smoke phase
+  const [micActive, setMicActive] = useState(false);
+  const [micError, setMicError] = useState("");
+  const [blowLevel, setBlowLevel] = useState(0);
+  const [sensitivity, setSensitivity] = useState(5);
+
+  const [wishIndex, setWishIndex] = useState(0);
+  const [surprise, setSurprise] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(0.7);
+  const [songPlaying, setSongPlaying] = useState(false);
+  const [notes, setNotes] = useState([]);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [openedGifts, setOpenedGifts] = useState([false, false, false]);
+
+  const reducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------------- canvas particle engine ---------------- */
+  const canvasRef = useRef(null);
+  const particlesRef = useRef([]);
+  const rafRef = useRef(null);
+  const fwTimerRef = useRef(null);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+  const surpriseRef = useRef(surprise);
+  surpriseRef.current = surprise;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const resize = () => {
+      canvas.width = window.innerWidth * devicePixelRatio;
+      canvas.height = window.innerHeight * devicePixelRatio;
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    const loop = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      ctx.clearRect(0, 0, w, h);
+      const ps = particlesRef.current;
+      for (let i = ps.length - 1; i >= 0; i--) {
+        const p = ps[i];
+        p.life -= 1;
+        if (p.life <= 0) { ps.splice(i, 1); continue; }
+
+        if (p.kind === "rocket") {
+          p.x += p.vx; p.y += p.vy; p.vy += 0.02;
+          ctx.globalAlpha = 0.9;
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.x - 1.5, p.y, 3, 9);
+          if (p.vy > -2.2 || p.y < p.targetY) {
+            ps.splice(i, 1);
+            explode(p.x, p.y, p.color);
+          }
+          continue;
+        }
+        // confetti + spark
+        p.x += p.vx; p.y += p.vy;
+        p.vy += p.kind === "confetti" ? 0.12 : 0.045;
+        p.vx *= 0.99; p.vy *= p.kind === "spark" ? 0.985 : 1;
+        p.rot += p.vr || 0;
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 40));
+        ctx.fillStyle = p.color;
+        if (p.kind === "confetti") {
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.rot);
+          ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+          ctx.restore();
+        } else {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+
+  const explode = useCallback((x, y, baseColor) => {
+    const colors = themeRef.current.fireworks;
+    const count = (reducedMotion ? 22 : 56) + (surpriseRef.current ? 30 : 0);
+    for (let i = 0; i < count; i++) {
+      const ang = (Math.PI * 2 * i) / count + Math.random() * 0.2;
+      const speed = 1.6 + Math.random() * 3.4;
+      particlesRef.current.push({
+        kind: "spark",
+        x, y,
+        vx: Math.cos(ang) * speed,
+        vy: Math.sin(ang) * speed,
+        size: 1.4 + Math.random() * 1.8,
+        color: Math.random() < 0.6 ? baseColor : colors[(Math.random() * colors.length) | 0],
+        life: 55 + Math.random() * 35,
+        rot: 0,
+      });
+    }
+  }, [reducedMotion]);
+
+  const burstConfetti = useCallback((xRatio = 0.5, yRatio = 0.35, count = 120) => {
+    const w = window.innerWidth, h = window.innerHeight;
+    const colors = themeRef.current.fireworks;
+    const n = reducedMotion ? Math.floor(count / 3) : count;
+    for (let i = 0; i < n; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 7;
+      particlesRef.current.push({
+        kind: "confetti",
+        x: w * xRatio, y: h * yRatio,
+        vx: Math.cos(ang) * speed,
+        vy: Math.sin(ang) * speed - 3,
+        size: 6 + Math.random() * 7,
+        color: colors[(Math.random() * colors.length) | 0],
+        life: 120 + Math.random() * 80,
+        rot: Math.random() * Math.PI,
+        vr: (Math.random() - 0.5) * 0.3,
+      });
+    }
+  }, [reducedMotion]);
+
+  const launchFirework = useCallback(() => {
+    const w = window.innerWidth, h = window.innerHeight;
+    const colors = themeRef.current.fireworks;
+    particlesRef.current.push({
+      kind: "rocket",
+      x: w * (0.15 + Math.random() * 0.7),
+      y: h + 10,
+      vx: (Math.random() - 0.5) * 1.4,
+      vy: -(8.5 + Math.random() * 3.5),
+      targetY: h * (0.15 + Math.random() * 0.3),
+      color: colors[(Math.random() * colors.length) | 0],
+      life: 300,
+      size: 2,
+      rot: 0,
+    });
+  }, []);
+
+  // fireworks scheduler in party stage
+  useEffect(() => {
+    if (stage !== "party") return;
+    const tick = () => {
+      launchFirework();
+      if (surpriseRef.current) launchFirework();
+      fwTimerRef.current = setTimeout(tick, (surpriseRef.current ? 350 : 850) + Math.random() * 500);
+    };
+    tick();
+    return () => clearTimeout(fwTimerRef.current);
+  }, [stage, launchFirework]);
+
+  /* ---------------- audio (melody) ---------------- */
+  const audioCtxRef = useRef(null);
+  const masterGainRef = useRef(null);
+  const songTimerRef = useRef(null);
+
+  const ensureAudio = () => {
+    if (!audioCtxRef.current) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtxRef.current = new Ctx();
+      masterGainRef.current = audioCtxRef.current.createGain();
+      masterGainRef.current.connect(audioCtxRef.current.destination);
+    }
+    if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
+    masterGainRef.current.gain.value = muted ? 0 : volume;
+    return audioCtxRef.current;
+  };
+
+  useEffect(() => {
+    if (masterGainRef.current) masterGainRef.current.gain.value = muted ? 0 : volume;
+  }, [muted, volume]);
+
+  const playSong = () => {
+    const ctx = ensureAudio();
+    clearTimeout(songTimerRef.current);
+    setSongPlaying(true);
+    let t = ctx.currentTime + 0.1;
+    MELODY.forEach(([note, beats]) => {
+      const dur = beats * BEAT;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = NOTE[note];
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.5, t + 0.025);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur * 0.95);
+      osc.connect(g);
+      g.connect(masterGainRef.current);
+      osc.start(t);
+      osc.stop(t + dur);
+      t += dur;
+    });
+    songTimerRef.current = setTimeout(
+      () => setSongPlaying(false),
+      (t - ctx.currentTime) * 1000
+    );
+  };
+
+  /* ---------------- microphone blow detection ---------------- */
+  const micStreamRef = useRef(null);
+  const micRafRef = useRef(null);
+  const blowHoldRef = useRef(0);
+  const sensitivityRef = useRef(sensitivity);
+  sensitivityRef.current = sensitivity;
+
+  const stopMic = useCallback(() => {
+    cancelAnimationFrame(micRafRef.current);
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+    setMicActive(false);
+    setBlowLevel(0);
+  }, []);
+
+  const startMic = async () => {
+    setMicError("");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMicError("Mic isn't available in this context — open the page over localhost or https, or use the button below.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      const ctx = ensureAudio();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      setMicActive(true);
+      blowHoldRef.current = 0;
+
+      const monitor = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        setBlowLevel(rms);
+        const threshold = 0.34 - sensitivityRef.current * 0.024; // 1..10 → 0.32..0.10
+        if (rms > threshold) {
+          blowHoldRef.current += 1;
+          if (blowHoldRef.current > 9) { // ~150ms of sustained blow
+            blowOut();
+            return;
+          }
+        } else {
+          blowHoldRef.current = Math.max(0, blowHoldRef.current - 1);
+        }
+        micRafRef.current = requestAnimationFrame(monitor);
+      };
+      micRafRef.current = requestAnimationFrame(monitor);
+    } catch (e) {
+      const msg =
+        e && e.name === "NotAllowedError"
+          ? "Microphone permission was denied. Allow mic access in the browser's site settings, then try again."
+          : "Couldn't access the microphone here — use the button below instead.";
+      setMicError(msg);
+      setMicActive(false);
+    }
+  };
+
+  useEffect(() => () => stopMic(), [stopMic]);
+
+  /* ---------------- stage transitions ---------------- */
+  const startCelebration = () => {
+    const trimmed = name.trim();
+    if (!trimmed) { setFormError("Add a name so the cake knows who it's for."); return; }
+    let a = null;
+    if (ageInput) {
+      a = parseInt(ageInput, 10);
+      if (isNaN(a) || a < 1 || a > 120) { setFormError("Age should be between 1 and 120."); return; }
+    } else if (yearInput) {
+      const y = parseInt(yearInput, 10);
+      const now = new Date().getFullYear();
+      if (isNaN(y) || y < now - 120 || y > now) { setFormError(`Birth year should be between ${now - 120} and ${now}.`); return; }
+      a = now - y;
+    }
+    setFormError("");
+    setAge(a);
+    setWishIndex((Math.random() * WISH_TEMPLATES.length) | 0);
+    ensureAudio();
+    setStage("reveal");
+  };
+
+  useEffect(() => {
+    if (stage === "reveal") {
+      burstConfetti(0.5, 0.3, 140);
+      const t1 = setTimeout(() => burstConfetti(0.2, 0.5, 70), 600);
+      const t2 = setTimeout(() => burstConfetti(0.8, 0.5, 70), 1100);
+      const t3 = setTimeout(() => setStage("cake"), 4200);
+      return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+    }
+  }, [stage, burstConfetti]);
+
+  const blowOut = () => {
+    stopMic();
+    setCandlesLit(false);
+    setBlowing(true);
+    setTimeout(() => {
+      setStage("party");
+      setBlowing(false);
+      burstConfetti(0.5, 0.4, 180);
+      launchFirework(); launchFirework(); launchFirework();
+      playSong();
+    }, 1500);
+  };
+
+  const candleCount = Math.max(1, Math.min(age || 5, 12));
+  const days = age ? Math.round(age * 365.25) : null;
+
+  /* ============================================================ */
+
+  return (
+    <div className="app" style={{ background: theme.bg, color: theme.ink, "--accent": theme.accent, "--accent2": theme.accent2, "--ink": theme.ink, "--sub": theme.sub, "--card": theme.card, "--border": theme.border }}>
+      <style>{CSS}</style>
+      <canvas ref={canvasRef} className="fx-canvas" />
+
+      {/* ambient floaters */}
+      {!reducedMotion && <Floaters stage={stage} surprise={surprise} theme={theme} />}
+
+      {/* theme switcher */}
+      <div className="theme-bar">
+        {Object.entries(THEMES).map(([key, t]) => (
+          <button
+            key={key}
+            className={"theme-dot" + (key === themeKey ? " active" : "")}
+            style={{ background: `linear-gradient(135deg, ${t.accent}, ${t.accent2})` }}
+            title={t.label}
+            aria-label={`Theme: ${t.label}`}
+            onClick={() => setThemeKey(key)}
+          />
+        ))}
+      </div>
+
+      {/* ---------------- FORM ---------------- */}
+      {stage === "form" && (
+        <main className="screen center">
+          <div className="form-card pop-in">
+            <div className="eyebrow">A little celebration, made for one person</div>
+            <h1 className="display">Whose birthday<br />is it?</h1>
+            <label className="field">
+              <span>Name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Sarah"
+                maxLength={30}
+                onKeyDown={(e) => e.key === "Enter" && startCelebration()}
+              />
+            </label>
+            <div className="field-row">
+              <label className="field">
+                <span>Age <em>optional</em></span>
+                <input
+                  value={ageInput}
+                  onChange={(e) => { setAgeInput(e.target.value.replace(/\D/g, "")); setYearInput(""); }}
+                  placeholder="25"
+                  inputMode="numeric"
+                  maxLength={3}
+                />
+              </label>
+              <div className="or">or</div>
+              <label className="field">
+                <span>Birth year <em>optional</em></span>
+                <input
+                  value={yearInput}
+                  onChange={(e) => { setYearInput(e.target.value.replace(/\D/g, "")); setAgeInput(""); }}
+                  placeholder="2001"
+                  inputMode="numeric"
+                  maxLength={4}
+                />
+              </label>
+            </div>
+            {formError && <div className="error" role="alert">{formError}</div>}
+            <button className="cta" onClick={startCelebration}>Start the celebration 🎉</button>
+          </div>
+        </main>
+      )}
+
+      {/* ---------------- REVEAL ---------------- */}
+      {stage === "reveal" && (
+        <main className="screen center">
+          <div className="reveal">
+            <h1 className="display giant pop-in">Happy Birthday<br /><span className="grad-text">{name.trim()}!</span> 🎂</h1>
+            {age && <p className="reveal-sub pop-in-late">Celebrating {age} amazing years</p>}
+          </div>
+        </main>
+      )}
+
+      {/* ---------------- CAKE ---------------- */}
+      {stage === "cake" && (
+        <main className="screen center cake-stage">
+          <div className={"candle-vignette" + (candlesLit ? " lit" : " dark")} />
+          <h2 className="cake-title">{candlesLit ? "Make a wish, then blow out the candles" : "✨"}</h2>
+
+          <Cake name={name.trim()} count={candleCount} lit={candlesLit} blowing={blowing} />
+
+          {candlesLit && (
+            <div className="blow-panel">
+              {!micActive ? (
+                <button className="cta ghost" onClick={startMic}>🎤 Use my microphone</button>
+              ) : (
+                <div className="mic-meter" aria-live="polite">
+                  <div className="mic-label">Listening… blow into the mic!</div>
+                  <div className="meter">
+                    <div className="meter-fill" style={{ width: `${Math.min(100, blowLevel * 320)}%` }} />
+                  </div>
+                  <label className="sens">
+                    Sensitivity
+                    <input
+                      type="range" min="1" max="10" value={sensitivity}
+                      onChange={(e) => setSensitivity(+e.target.value)}
+                    />
+                  </label>
+                </div>
+              )}
+              {micError && <div className="error">{micError}</div>}
+              <button className="cta" onClick={blowOut}>💨 Blow candles manually</button>
+            </div>
+          )}
+        </main>
+      )}
+
+      {/* ---------------- PARTY ---------------- */}
+      {stage === "party" && (
+        <main className="screen party">
+          <header className="party-head pop-in">
+            <h1 className="display grad-text">Happy Birthday, {name.trim()}!</h1>
+            <p className="party-sub">The candles are out — the wish is on its way. 🌠</p>
+          </header>
+
+          {/* audio controls */}
+          <section className="card audio-bar">
+            <button className="chip" onClick={() => (songPlaying ? null : playSong())} disabled={songPlaying}>
+              {songPlaying ? "🎶 Playing…" : "▶ Replay the song"}
+            </button>
+            <button className="chip" onClick={() => setMuted(!muted)}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
+            <label className="vol">
+              <span>Volume</span>
+              <input type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => setVolume(+e.target.value)} />
+            </label>
+            <button className="chip surprise" onClick={() => { setSurprise(true); burstConfetti(0.5, 0.3, 200); launchFirework(); launchFirework(); launchFirework(); }}>
+              ✨ Extra surprise
+            </button>
+          </section>
+
+          {/* wish */}
+          <section className="card wish">
+            <div className="eyebrow">Your birthday wish</div>
+            <p className="wish-text" key={wishIndex}>{WISH_TEMPLATES[wishIndex](name.trim(), age)}</p>
+            <button className="chip" onClick={() => setWishIndex((wishIndex + 1) % WISH_TEMPLATES.length)}>↻ Another wish</button>
+          </section>
+
+          {/* stats */}
+          {age && (
+            <section className="stats">
+              <Stat label="years young" value={age} />
+              <Stat label="months of memories" value={age * 12} />
+              <Stat label="days lived" value={days} />
+              <Stat label="hours (roughly!)" value={days * 24} />
+            </section>
+          )}
+
+          {/* gifts */}
+          <section className="card">
+            <div className="eyebrow">Tap a gift to open it</div>
+            <div className="gift-row">
+              {["🎁", "🎁", "🎁"].map((g, i) => (
+                <GiftBox
+                  key={i}
+                  index={i}
+                  opened={openedGifts[i]}
+                  onOpen={() => {
+                    if (!openedGifts[i]) {
+                      const next = [...openedGifts];
+                      next[i] = true;
+                      setOpenedGifts(next);
+                      burstConfetti(0.3 + i * 0.2, 0.6, 50);
+                    }
+                  }}
+                  name={name.trim()}
+                />
+              ))}
+            </div>
+          </section>
+
+          {/* photo frames */}
+          <section className="card">
+            <div className="eyebrow">Memory lane</div>
+            <div className="carousel" tabIndex={0} aria-label="Photo frames, scroll horizontally">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div className="frame" key={i} style={{ background: `linear-gradient(${135 + i * 40}deg, ${theme.fireworks[i % theme.fireworks.length]}33, ${theme.fireworks[(i + 2) % theme.fireworks.length]}55)` }}>
+                  <span>{["🎈", "🥳", "🎂", "🎊", "💝"][i]}</span>
+                  <small>Add your favorite photo of {name.trim()} here</small>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* memory wall */}
+          <section className="card">
+            <div className="eyebrow">Memory wall — leave a note</div>
+            <div className="note-input">
+              <input
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                placeholder={`Write a wish for ${name.trim()}…`}
+                maxLength={140}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && noteDraft.trim()) {
+                    setNotes([noteDraft.trim(), ...notes]);
+                    setNoteDraft("");
+                  }
+                }}
+              />
+              <button
+                className="chip"
+                onClick={() => {
+                  if (noteDraft.trim()) { setNotes([noteDraft.trim(), ...notes]); setNoteDraft(""); }
+                }}
+              >
+                Pin it 📌
+              </button>
+            </div>
+            {notes.length === 0 ? (
+              <p className="empty">No notes yet — be the first to pin a wish.</p>
+            ) : (
+              <div className="notes">
+                {notes.map((n, i) => (
+                  <div className="note pop-in" key={notes.length - i} style={{ rotate: `${((i * 37) % 7) - 3}deg` }}>{n}</div>
+                ))}
+              </div>
+            )}
+            <p className="hint">Notes live for this session only.</p>
+          </section>
+
+          <footer className="party-foot">
+            <button className="chip" onClick={() => {
+              setStage("form"); setCandlesLit(true); setSurprise(false);
+              setOpenedGifts([false, false, false]); setNotes([]); setAge(null);
+              setAgeInput(""); setYearInput(""); setName("");
+            }}>
+              ← Celebrate someone else
+            </button>
+          </footer>
+        </main>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   Sub-components
+   ============================================================ */
+
+const CAKE_SPRINKLES = [
+  { x: 168, y: 146, rot: 24, color: "#8fd0ff" },
+  { x: 205, y: 156, rot: -18, color: "#ffd76b" },
+  { x: 252, y: 150, rot: 40, color: "#c08fff" },
+  { x: 296, y: 158, rot: -30, color: "#7be0c3" },
+  { x: 318, y: 142, rot: 12, color: "#ff8fab" },
+  { x: 132, y: 188, rot: -24, color: "#ffd76b" },
+  { x: 348, y: 192, rot: 30, color: "#8fd0ff" },
+  { x: 96, y: 262, rot: 18, color: "#c08fff" },
+  { x: 138, y: 276, rot: -34, color: "#7be0c3" },
+  { x: 196, y: 262, rot: 26, color: "#ff8fab" },
+  { x: 248, y: 278, rot: -12, color: "#ffd76b" },
+  { x: 305, y: 264, rot: 34, color: "#8fd0ff" },
+  { x: 362, y: 276, rot: -26, color: "#c08fff" },
+];
+
+const Drips = ({ xStart, xEnd, count, y, seed }) => {
+  const step = (xEnd - xStart) / count;
+  return (
+    <g fill="#fff6fb">
+      {Array.from({ length: count }).map((_, i) => (
+        <rect
+          key={i}
+          x={xStart + i * step + step / 2 - 5}
+          y={y - 6}
+          width="10"
+          height={20 + ((i * 53 + seed) % 14)}
+          rx="5"
+        />
+      ))}
+    </g>
+  );
+};
+
+const Cherry = ({ cx, cy }) => (
+  <g>
+    <path
+      d={`M ${cx} ${cy - 7} Q ${cx + 3} ${cy - 15} ${cx + 9} ${cy - 16}`}
+      stroke="#7a4a2b"
+      strokeWidth="2"
+      fill="none"
+      strokeLinecap="round"
+    />
+    <circle cx={cx} cy={cy} r="8" fill="url(#cherryG)" />
+    <ellipse cx={cx - 2.6} cy={cy - 2.8} rx="2.6" ry="1.8" fill="rgba(255,255,255,0.5)" />
+  </g>
+);
+
+const Cake = ({ name, count, lit, blowing }) => {
+  const candles = Array.from({ length: count });
+  const message = `Happy Birthday ${name}`;
+  const messageFontSize = message.length > 26 ? 14.5 : message.length > 20 ? 17 : 20;
+
+  return (
+    <div className="cake-wrap">
+      <div className="candles">
+        {candles.map((_, i) => (
+          <div className="candle" key={i} style={{ "--i": i, "--hue": (i * 47) % 360 }}>
+            {lit ? (
+              <div className="flame" style={{ animationDelay: `${(i * 137) % 900}ms` }} />
+            ) : (
+              blowing && (
+                <div className="smoke-set">
+                  <span className="smoke" />
+                  <span className="smoke s2" />
+                  <span className="smoke s3" />
+                </div>
+              )
+            )}
+            <div className="wick" />
+            <div className="candle-body" />
+          </div>
+        ))}
+      </div>
+
+      <svg
+        className="cake-svg"
+        viewBox="0 0 480 360"
+        role="img"
+        aria-label={`Birthday cake with ${count} candles for ${name}`}
+      >
+        <defs>
+          <linearGradient id="tierTopG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffeaf3" />
+            <stop offset="100%" stopColor="#f4afc9" />
+          </linearGradient>
+          <linearGradient id="tierMidG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#fff3f8" />
+            <stop offset="100%" stopColor="#f7c3da" />
+          </linearGradient>
+          <linearGradient id="tierBaseG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffe3ee" />
+            <stop offset="100%" stopColor="#ef9fc0" />
+          </linearGradient>
+          <linearGradient id="plateG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#f0ecf7" />
+            <stop offset="100%" stopColor="#aaa2c2" />
+          </linearGradient>
+          <linearGradient id="sideShadeG" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="rgba(0,0,0,0.10)" />
+            <stop offset="18%" stopColor="rgba(0,0,0,0)" />
+            <stop offset="82%" stopColor="rgba(0,0,0,0)" />
+            <stop offset="100%" stopColor="rgba(0,0,0,0.12)" />
+          </linearGradient>
+          <radialGradient id="cherryG" cx="0.35" cy="0.3" r="1">
+            <stop offset="0%" stopColor="#ff96ac" />
+            <stop offset="100%" stopColor="#d8244c" />
+          </radialGradient>
+        </defs>
+
+        {/* plate */}
+        <ellipse cx="240" cy="318" rx="212" ry="21" fill="url(#plateG)" />
+        <ellipse cx="240" cy="314" rx="196" ry="15" fill="#f6f3fb" />
+
+        {/* base tier */}
+        <rect x="68" y="238" width="344" height="80" rx="12" fill="url(#tierBaseG)" />
+        <rect x="68" y="238" width="344" height="80" rx="12" fill="url(#sideShadeG)" />
+        <ellipse cx="240" cy="238" rx="172" ry="14" fill="#fff6fb" />
+
+        {/* mid tier */}
+        <rect x="104" y="168" width="272" height="74" rx="11" fill="url(#tierMidG)" />
+        <rect x="104" y="168" width="272" height="74" rx="11" fill="url(#sideShadeG)" />
+        <Drips xStart={114} xEnd={366} count={9} y={170} seed={4} />
+        <ellipse cx="240" cy="168" rx="136" ry="12" fill="#fff6fb" />
+
+        {/* top tier */}
+        <rect x="140" y="110" width="200" height="62" rx="10" fill="url(#tierTopG)" />
+        <rect x="140" y="110" width="200" height="62" rx="10" fill="url(#sideShadeG)" />
+        <Drips xStart={148} xEnd={332} count={7} y={112} seed={9} />
+        <ellipse cx="240" cy="110" rx="100" ry="11" fill="#fff6fb" />
+
+        {/* message */}
+        <text x="240" y="213" textAnchor="middle" className="cake-msg" fontSize={messageFontSize}>
+          {message}
+        </text>
+
+        {/* piped dots on the base tier */}
+        {Array.from({ length: 8 }).map((_, i) => (
+          <circle key={i} cx={104 + i * 39} cy="298" r="5" fill="#fff6fb" />
+        ))}
+
+        {/* sprinkles */}
+        {CAKE_SPRINKLES.map(({ x, y, rot, color }, i) => (
+          <rect
+            key={i}
+            x="-3.5"
+            y="-1.5"
+            width="7"
+            height="3"
+            rx="1.5"
+            fill={color}
+            transform={`translate(${x} ${y}) rotate(${rot})`}
+          />
+        ))}
+
+        {/* cherries on the exposed ledges */}
+        <Cherry cx={88} cy={230} />
+        <Cherry cx={392} cy={230} />
+        <Cherry cx={122} cy={160} />
+        <Cherry cx={358} cy={160} />
+      </svg>
+    </div>
+  );
+};
+
+function GiftBox({ index, opened, onOpen, name }) {
+  const surprises = [
+    `A year of good luck, gift-wrapped just for ${name}. 🍀`,
+    `One (1) official excuse to eat cake for breakfast tomorrow. 🍰`,
+    `Unlimited birthday hugs, redeemable all year. 🤗`,
+  ];
+  const colors = ["#e85d75", "#5d9be8", "#e8b15d"];
+  return (
+    <button className={"gift" + (opened ? " open" : "")} onClick={onOpen} aria-label={opened ? "Opened gift" : "Open gift"}>
+      {!opened ? (
+        <div className="gift-box" style={{ "--g": colors[index] }}>
+          <div className="lid" />
+          <div className="bow" />
+          <div className="box" />
+        </div>
+      ) : (
+        <div className="gift-reveal pop-in">{surprises[index]}</div>
+      )}
+    </button>
+  );
+}
+
+function Stat({ label, value }) {
+  const [display, setDisplay] = useState(0);
+  useEffect(() => {
+    let raf;
+    const start = performance.now();
+    const dur = 1600;
+    const step = (t) => {
+      const p = Math.min(1, (t - start) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setDisplay(Math.round(value * eased));
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value]);
+  return (
+    <div className="stat card">
+      <div className="stat-num">{display.toLocaleString()}</div>
+      <div className="stat-label">{label}</div>
+    </div>
+  );
+}
+
+function Floaters({ stage, surprise, theme }) {
+  const items =
+    stage === "party"
+      ? ["🎈", "🎈", "🎈", "💛", "⭐", "🫧", "🎀", "🎈", "✨", "💖", "⭐", "🫧"]
+      : ["🎈", "✨", "🎈", "⭐", "🫧", "🎈"];
+  const extra = surprise ? ["🌈", "🎉", "🎆", "💫", "🎊"] : [];
+  return (
+    <div className="floaters" aria-hidden="true">
+      {[...items, ...extra].map((e, i) => (
+        <span
+          key={i}
+          className="floater"
+          style={{
+            left: `${(i * 83) % 100}%`,
+            animationDuration: `${9 + ((i * 53) % 9)}s`,
+            animationDelay: `${-((i * 29) % 12)}s`,
+            fontSize: `${18 + ((i * 31) % 22)}px`,
+          }}
+        >
+          {e}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   Styles
+   ============================================================ */
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&family=Nunito:wght@400;600;800&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+.app {
+  min-height: 100vh;
+  font-family: 'Nunito', system-ui, sans-serif;
+  overflow-x: hidden;
+  position: relative;
+  transition: background 600ms ease;
+}
+.fx-canvas {
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  pointer-events: none; z-index: 50;
+}
+.screen { position: relative; z-index: 10; min-height: 100vh; padding: 24px; }
+.center { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+
+.display {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+.giant { font-size: clamp(2.4rem, 7vw, 5rem); text-align: center; }
+.grad-text {
+  background: linear-gradient(100deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.eyebrow {
+  font-size: 0.72rem; font-weight: 800; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--sub); margin-bottom: 10px;
+}
+
+/* ---------- theme bar ---------- */
+.theme-bar {
+  position: fixed; top: 14px; right: 14px; z-index: 60;
+  display: flex; gap: 8px; padding: 8px 10px;
+  background: rgba(0,0,0,0.18); border-radius: 999px; backdrop-filter: blur(8px);
+}
+.theme-dot {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid transparent; cursor: pointer; transition: transform 200ms;
+}
+.theme-dot:hover { transform: scale(1.18); }
+.theme-dot.active { border-color: var(--ink); transform: scale(1.18); }
+.theme-dot:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* ---------- form ---------- */
+.form-card {
+  width: min(440px, 100%);
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 24px; padding: 32px 28px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.25);
+}
+.form-card h1 { font-size: clamp(2rem, 5vw, 2.8rem); margin-bottom: 22px; }
+.field { display: block; margin-bottom: 16px; flex: 1; }
+.field span { display: block; font-size: 0.8rem; font-weight: 800; margin-bottom: 6px; color: var(--sub); }
+.field em { font-style: normal; opacity: 0.55; font-weight: 600; }
+.field input {
+  width: 100%; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--border); background: rgba(0,0,0,0.12);
+  color: var(--ink); font: inherit; font-weight: 600;
+}
+.field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.field-row { display: flex; gap: 10px; align-items: center; }
+.or { color: var(--sub); font-size: 0.8rem; font-weight: 800; padding-top: 14px; }
+.error { color: #ff7a7a; font-size: 0.85rem; font-weight: 700; margin: 4px 0 10px; }
+
+.cta {
+  width: 100%; margin-top: 6px; padding: 14px 18px;
+  font: inherit; font-weight: 800; font-size: 1rem;
+  color: #1c1228; cursor: pointer; border: none; border-radius: 14px;
+  background: linear-gradient(100deg, var(--accent), var(--accent2));
+  box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+  transition: transform 180ms, box-shadow 180ms;
+}
+.cta:hover { transform: translateY(-2px); box-shadow: 0 16px 36px rgba(0,0,0,0.35); }
+.cta:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.cta.ghost { background: transparent; color: var(--ink); border: 1px solid var(--border); box-shadow: none; }
+
+/* ---------- reveal ---------- */
+.reveal { text-align: center; }
+.reveal-sub {
+  margin-top: 18px; font-size: clamp(1.1rem, 3vw, 1.6rem);
+  font-weight: 600; color: var(--sub); font-family: 'Fraunces', serif; font-style: italic;
+}
+
+/* ---------- cake stage ---------- */
+.cake-stage { gap: 26px; }
+.cake-title { font-family: 'Fraunces', serif; font-weight: 500; font-size: clamp(1.2rem, 3.4vw, 1.7rem); text-align: center; z-index: 12; }
+.candle-vignette {
+  position: fixed; inset: 0; pointer-events: none; z-index: 5;
+  transition: opacity 1200ms ease;
+}
+.candle-vignette.lit {
+  background: radial-gradient(closest-side at 50% 58%, rgba(255,180,90,0.14), rgba(0,0,0,0.55) 75%, rgba(0,0,0,0.78));
+  opacity: 1;
+}
+.candle-vignette.dark { background: rgba(0,0,0,0.7); opacity: 1; }
+
+.cake-wrap { position: relative; z-index: 11; width: clamp(300px, 70vw, 460px); }
+.cake-svg {
+  display: block; width: 100%; height: auto;
+  filter: drop-shadow(0 24px 30px rgba(0,0,0,0.4));
+}
+.cake-msg {
+  font-family: 'Fraunces', serif; font-style: italic; font-weight: 600;
+  fill: #b04a78;
+}
+.candles {
+  /* anchored to the SVG top tier: x 140–340 of 480 wide, surface at y≈112 of 360 tall */
+  position: absolute; left: 32%; right: 32%; bottom: 68.5%;
+  display: flex; justify-content: space-around; align-items: flex-end;
+  z-index: 3;
+}
+.candle { position: relative; display: flex; flex-direction: column; align-items: center; }
+.candle-body {
+  width: clamp(7px, 1.6vw, 11px); height: clamp(30px, 6vw, 44px);
+  border-radius: 4px 4px 2px 2px;
+  background: repeating-linear-gradient(135deg, hsl(var(--hue) 75% 78%) 0 5px, hsl(var(--hue) 75% 62%) 5px 10px);
+  box-shadow: inset -2px 0 3px rgba(0,0,0,0.18);
+}
+.wick { width: 2px; height: 6px; background: #3b2c1f; }
+.flame {
+  width: 12px; height: 20px;
+  background: radial-gradient(ellipse at 50% 70%, #fff8e0 0%, #ffd76b 38%, #ff9d3c 70%, rgba(255,90,30,0) 100%);
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  filter: drop-shadow(0 0 8px rgba(255,180,80,0.9)) drop-shadow(0 0 22px rgba(255,140,40,0.55));
+  animation: flicker 240ms ease-in-out infinite alternate;
+  transform-origin: 50% 100%;
+}
+@keyframes flicker {
+  0% { transform: scale(1) skewX(0deg); opacity: 1; }
+  45% { transform: scale(1.06, 0.94) skewX(2.5deg); opacity: 0.92; }
+  100% { transform: scale(0.94, 1.1) skewX(-3deg); opacity: 0.98; }
+}
+.smoke-set { position: absolute; bottom: 100%; left: 50%; }
+.smoke {
+  position: absolute; left: -4px; bottom: 0;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: rgba(200,200,210,0.5); filter: blur(2px);
+  animation: smoke 1.6s ease-out forwards;
+}
+.smoke.s2 { animation-delay: 0.25s; }
+.smoke.s3 { animation-delay: 0.5s; }
+@keyframes smoke {
+  0% { transform: translateY(0) scale(0.6); opacity: 0.7; }
+  100% { transform: translateY(-46px) translateX(8px) scale(2.2); opacity: 0; }
+}
+
+/* ---------- blow panel ---------- */
+.blow-panel { z-index: 12; display: flex; flex-direction: column; gap: 12px; width: min(360px, 100%); align-items: stretch; }
+.mic-meter { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 14px; }
+.mic-label { font-size: 0.85rem; font-weight: 800; margin-bottom: 8px; }
+.meter { height: 10px; border-radius: 999px; background: rgba(0,0,0,0.25); overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 90ms linear; }
+.sens { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 0.78rem; font-weight: 800; color: var(--sub); }
+.sens input { flex: 1; accent-color: var(--accent); }
+
+/* ---------- party ---------- */
+.party { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; padding-top: 70px; padding-bottom: 60px; }
+.party-head { text-align: center; }
+.party-head h1 { font-size: clamp(1.9rem, 6vw, 3.4rem); }
+.party-sub { color: var(--sub); margin-top: 8px; font-weight: 600; }
+
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 20px; padding: 20px; backdrop-filter: blur(10px);
+}
+.chip {
+  font: inherit; font-weight: 800; font-size: 0.85rem;
+  padding: 9px 14px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: rgba(0,0,0,0.15); color: var(--ink);
+  transition: transform 150ms;
+}
+.chip:hover { transform: translateY(-1px); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip:disabled { opacity: 0.5; cursor: default; }
+.chip.surprise { background: linear-gradient(100deg, var(--accent), var(--accent2)); color: #1c1228; border: none; }
+
+.audio-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.vol { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 800; color: var(--sub); flex: 1; min-width: 140px; }
+.vol input { flex: 1; accent-color: var(--accent); }
+
+.wish-text {
+  font-family: 'Fraunces', serif; font-size: clamp(1.05rem, 3vw, 1.35rem);
+  line-height: 1.5; margin-bottom: 14px;
+  animation: pop 480ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.stat { text-align: center; padding: 18px 10px; }
+.stat-num { font-family: 'Fraunces', serif; font-weight: 700; font-size: clamp(1.4rem, 4vw, 2rem); color: var(--accent); }
+.stat-label { font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: var(--sub); margin-top: 4px; }
+
+.gift-row { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.gift { background: none; border: none; cursor: pointer; padding: 8px; border-radius: 16px; }
+.gift:focus-visible { outline: 2px solid var(--accent); }
+.gift-box { position: relative; width: 84px; height: 84px; transition: transform 200ms; }
+.gift:hover .gift-box { transform: translateY(-4px) rotate(-2deg); }
+.box {
+  position: absolute; bottom: 0; left: 6px; right: 6px; height: 56px;
+  background: var(--g); border-radius: 6px;
+  box-shadow: inset 0 -10px 16px rgba(0,0,0,0.2);
+}
+.box::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 12px; transform: translateX(-50%); background: rgba(255,255,255,0.75); }
+.lid {
+  position: absolute; top: 16px; left: 0; right: 0; height: 18px;
+  background: var(--g); border-radius: 5px; filter: brightness(1.12);
+  box-shadow: 0 3px 6px rgba(0,0,0,0.25);
+}
+.bow { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); font-size: 0; }
+.bow::before { content: '🎀'; font-size: 20px; }
+.gift-reveal {
+  width: 200px; min-height: 84px; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 0.9rem; line-height: 1.4; text-align: center;
+  background: rgba(0,0,0,0.18); border: 1px dashed var(--border); border-radius: 14px; padding: 12px;
+  color: var(--ink);
+}
+
+.carousel {
+  display: flex; gap: 14px; overflow-x: auto; padding: 6px 2px 12px;
+  scroll-snap-type: x mandatory;
+}
+.carousel:focus-visible { outline: 2px solid var(--accent); border-radius: 12px; }
+.frame {
+  flex: 0 0 180px; height: 130px; border-radius: 14px;
+  border: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  scroll-snap-align: start; text-align: center; padding: 10px;
+}
+.frame span { font-size: 34px; }
+.frame small { font-size: 0.68rem; font-weight: 700; color: var(--sub); }
+
+.note-input { display: flex; gap: 10px; margin-bottom: 14px; }
+.note-input input {
+  flex: 1; padding: 11px 14px; border-radius: 12px;
+  border: 1px solid var(--border); background: rgba(0,0,0,0.12); color: var(--ink); font: inherit; font-weight: 600;
+}
+.note-input input:focus-visible { outline: 2px solid var(--accent); }
+.notes { display: flex; flex-wrap: wrap; gap: 12px; }
+.note {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent2) 220%);
+  color: #1c1228; font-weight: 700; font-size: 0.85rem;
+  padding: 12px 14px; border-radius: 4px; max-width: 220px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+}
+.empty { color: var(--sub); font-size: 0.85rem; font-weight: 600; }
+.hint { color: var(--sub); font-size: 0.7rem; margin-top: 10px; font-weight: 600; }
+
+.party-foot { text-align: center; margin-top: 6px; }
+
+/* ---------- floaters ---------- */
+.floaters { position: fixed; inset: 0; pointer-events: none; z-index: 4; overflow: hidden; }
+.floater {
+  position: absolute; bottom: -50px;
+  animation: floatUp linear infinite;
+  opacity: 0.8;
+}
+@keyframes floatUp {
+  0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 0; }
+  8% { opacity: 0.85; }
+  50% { transform: translateY(-55vh) translateX(26px) rotate(8deg); }
+  100% { transform: translateY(-112vh) translateX(-18px) rotate(-6deg); opacity: 0; }
+}
+
+/* ---------- animations ---------- */
+.pop-in { animation: pop 600ms cubic-bezier(0.2, 0.9, 0.3, 1.15) both; }
+.pop-in-late { animation: pop 700ms cubic-bezier(0.2, 0.9, 0.3, 1.15) 500ms both; }
+@keyframes pop {
+  0% { opacity: 0; transform: translateY(22px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flame { animation: none; }
+  .floater { animation: none; display: none; }
+  .pop-in, .pop-in-late, .wish-text { animation: none; }
+}
+
+@media (max-width: 520px) {
+  .field-row { flex-direction: column; align-items: stretch; }
+  .or { padding-top: 0; text-align: center; }
+  .party { padding-top: 80px; }
+}
+`;
